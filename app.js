@@ -31,4 +31,6 @@ app.post("/webhook", (req, res) => {
 });
 
 // ✅ Puerto (Render lo usa automáticamente)
-app.listen(10000, () => console.log("Servidor corriendo en puerto 10000"));
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log("Servidor corriendo en puerto " + PORT));
+
