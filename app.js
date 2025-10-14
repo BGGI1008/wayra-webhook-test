@@ -1,102 +1,98 @@
-import express from "express";
-
-const app = express();
-app.use(express.json());
-
-// ✅ Ruta principal: muestra que el webhook está activo
-app.get("/", (req, res) => {
-  res.send("✅ Webhook de Casa Wayra funcionando correctamente");
-});
-
-// ✅ Ruta para verificación de Meta (setup del webhook)
-app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode && token && mode === "subscribe" && token === "wayra123") {
-    console.log("✅ Verificación de Meta completada");
-    res.status(200).send(challenge);
-  } else {
-    console.log("❌ Falló la verificación");
-    res.sendStatus(403);
-  }
-});
-
-// ✅ Ruta para recibir mensajes de WhatsApp
-app.post("/webhook", (req, res) => {
-  console.log("📩 Nuevo mensaje recibido:");
-  console.log(JSON.stringify(req.body, null, 2));
-  res.sendStatus(200);
-});
-
-// ✅ Puerto (Render lo usa automáticamente)
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log("Servidor corriendo en puerto " + PORT));
-
-import express from "express";
-import bodyParser from "body-parser";
-import fetch from "node-fetch";
+const express = require("express");
+const bodyParser = require("body-parser");
 
 const app = express();
 app.use(bodyParser.json());
 
+// Verificación del webhook (la URL /webhook de Meta)
 app.get("/webhook", (req, res) => {
-  const verify_token = "wayra123"; // mismo token que usaste en Meta
+  const VERIFY_TOKEN = "wayra123"; // el mismo que pusiste en Meta
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode && token === verify_token) {
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
+  if (mode && token && token === VERIFY_TOKEN) {
+    console.log("✅ Verificación de Meta completada");
+    return res.status(200).send(challenge);
   }
+  console.log("❌ Falló la verificación");
+  return res.sendStatus(403);
 });
 
+// Bot con ChatGPT + respuesta por WhatsApp
 app.post("/webhook", async (req, res) => {
-  const entry = req.body.entry?.[0];
-  const changes = entry?.changes?.[0];
-  const message = changes?.value?.messages?.[0];
-  
-  if (message && message.text) {
-    const text = message.text.body;
-    const from = message.from;
+  try {
+    console.log("📩 Payload:", JSON.stringify(req.body, null, 2));
 
-    // 🔹 Enviar mensaje a OpenAI
-    const gptResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+    const msg = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    if (!msg) return res.sendStatus(200); // otros eventos (entrega/lectura/etc.)
+
+    const from = msg.from;
+    const userText = msg.text?.body || "";
+
+    const systemPrompt = `
+Eres el asistente oficial de ${process.env.BUSINESS_NAME || "Casa Wayra"} en ${process.env.CITY || "Ibarra"}.
+Ayuda a reservar mesa (fecha/hora/personas/nombre), ver promociones/eventos y pedir cerveza (barril/sixpack). 
+Tono cálido y claro. Máx. 320 caracteres. Termina con una pregunta concreta.
+`.trim();
+
+    // 1) Llama a OpenAI
+    let replyText =
+      "¡Hola! 🍻 Gracias por escribir a Casa Wayra. ¿Reservar, promos o cerveza?";
+
+    try {
+      const aiResp = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          temperature: 0.4,
+          max_tokens: 200,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userText || "Cliente envió un mensaje." },
+          ],
+        }),
+      });
+
+      if (aiResp.ok) {
+        const data = await aiResp.json();
+        replyText =
+          data.choices?.[0]?.message?.content?.slice(0, 500) || replyText;
+      } else {
+        console.error("❌ OpenAI error:", await aiResp.text());
+      }
+    } catch (e) {
+      console.error("❌ OpenAI exception:", e);
+    }
+
+    // 2) Envía respuesta por WhatsApp
+    const waUrl = `https://graph.facebook.com/v20.0/${process.env.PHONE_NUMBER_ID}/messages`;
+    const payload = {
+      messaging_product: "whatsapp",
+      to: from,
+      type: "text",
+      text: { body: replyText },
+    };
+
+    const waResp = await fetch(waUrl, {
       method: "POST",
       headers: {
+        "Authorization": `Bearer ${process.env.WHATSAPP_TOKEN}`,
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
       },
-      body: JSON.stringify({
-        model: "gpt-3.5-turbo",
-        messages: [
-          { role: "system", content: "Eres un asistente de Casa Wayra que responde con amabilidad y precisión." },
-          { role: "user", content: text },
-        ],
-      }),
-    }).then((r) => r.json());
-
-    const reply = gptResponse.choices?.[0]?.message?.content || "No entendí tu mensaje.";
-
-    // 🔹 Enviar respuesta a WhatsApp
-    await fetch("https://graph.facebook.com/v17.0/850689061455817/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": "Bearer EAHJQEt3FEcOBPt0cZCOZChgld7hqZBZC9bzRyN3XlZBHgmZBgNuZBdfJZAfLGVsjlDfg07mfl9Xi3",
-      },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to: from,
-        text: { body: reply },
-      }),
+      body: JSON.stringify(payload),
     });
-  }
 
-  res.sendStatus(200);
+    console.log("✅ Respuesta enviada a WhatsApp:", await waResp.text());
+    return res.sendStatus(200);
+  } catch (err) {
+    console.error("❌ Error en webhook:", err);
+    return res.sendStatus(200); // evita reintentos de Meta
+  }
 });
 
 app.listen(10000, () => console.log("✅ Servidor corriendo en puerto 10000"));
