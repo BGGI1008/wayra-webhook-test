@@ -1,9 +1,10 @@
-// app.js — Wayra: Menú lista + Horario/Menú (imagen) + Ubicación + Plan Wayra + Reservas (normal/especial) + Cerveza
+// app.js — Wayra: Bienvenida + Menú (lista) + Horario/Menú (imagen) + Ubicación + Plan Wayra + Reservas (normal/especial) + Cerveza
 // package.json recomendado:
 // {
 //   "main": "app.js",
 //   "scripts": { "start": "node app.js" },
-//   "dependencies": { "express": "^4.18.2", "body-parser": "^1.20.2" }
+//   "dependencies": { "express": "^4.18.2", "body-parser": "^1.20.2" },
+//   "engines": { "node": ">=18" }
 // }
 
 const express = require("express");
@@ -12,23 +13,27 @@ const bodyParser = require("body-parser");
 const app = express();
 app.use(bodyParser.json());
 
-// 1) Servir archivos estáticos desde /public (para /static/menu.jpg)
-app.use("/static", express.static("public"));
+// (OPCIONAL) Sirve archivos estáticos desde /public → /static/... (para alojar menu.jpg en Render)
+// Descomenta si subiste public/menu.jpg a tu repo:
+// app.use("/static", express.static("public"));
 
 // ====== CONFIG ======
-const VERIFY_TOKEN = "wayra123"; // Debe coincidir con el de Webhooks en Meta
+const VERIFY_TOKEN    = process.env.VERIFY_TOKEN || "wayra123";
+const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;      // token Meta
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;     // ID del número
 
 const BUSINESS = process.env.BUSINESS_NAME || "Wayra Brew Garten";
 const CITY     = process.env.CITY || "Ibarra";
 
-const MENU_IMAGE_URL = process.env.MENU_IMAGE_URL || ""; // https://TU-APP.onrender.com/static/menu.jpg
+const MENU_IMAGE_URL = process.env.MENU_IMAGE_URL || ""; // ej: https://TU-APP.onrender.com/static/menu.jpg
 const MAPS_URL = process.env.MAPS_URL || "";
-const MAP_LAT  = process.env.MAP_LAT ? Number(process.env.MAP_LAT) : null;
-const MAP_LNG  = process.env.MAP_LNG ? Number(process.env.MAP_LNG) : null;
+const MAPS_LAT = process.env.MAPS_LAT ? Number(process.env.MAPS_LAT) : null;
+const MAPS_LNG = process.env.MAPS_LNG ? Number(process.env.MAPS_LNG) : null;
 
 const PLAN_WAYRA_TEXT = process.env.PLAN_WAYRA_TEXT ||
-  "🥤 PLAN WAYRA: todo a $2.\nDías: Lun–Jue 12–22, Vie–Sáb 12–00, Dom 12–20.";
+  "🥤 PLAN WAYRA: todo a $2. Jue–Vie 18h–23h30, Sáb 12h30–23h30, Dom 12h30–19h00.";
 
+// Precios simples (ajusta a gusto)
 const PRICES = {
   sixpack: 9.99,
   barril_20l: 64.0,
@@ -36,15 +41,16 @@ const PRICES = {
 };
 
 // ====== SESIONES (RAM) ======
-const sessions = new Map();
+const sessions = new Map(); // key: wa_id
 function getSession(userId) {
   if (!sessions.has(userId)) {
     sessions.set(userId, {
-      mode: "idle",               // idle | reserve | special | beer
+      greeted: false,         // ya saludó
+      mode: "idle",           // idle | reserve | special | beer
       reserve: { date:"", time:"", people:"", name:"" },
       special: { occasion:"", date:"", time:"", people:"", name:"", notes:"" },
       beer: { kind:"", qty:"", delivery:"" },
-      last: Date.now(),
+      updatedAt: Date.now(),
     });
   }
   return sessions.get(userId);
@@ -52,11 +58,11 @@ function getSession(userId) {
 
 // ====== HELPERS WHATSAPP ======
 async function waPOST(payload) {
-  const url = `https://graph.facebook.com/v20.0/${process.env.PHONE_NUMBER_ID}/messages`;
+  const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
   const r = await fetch(url, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${process.env.WHATSAPP_TOKEN}`,
+      "Authorization": `Bearer ${WHATSAPP_TOKEN}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
@@ -99,7 +105,7 @@ async function sendLocation(to) {
   await sendMainMenuList(to);
 }
 
-// Menú principal tipo LISTA
+// Menú principal tipo LISTA (más de 3 opciones)
 async function sendMainMenuList(to) {
   return waPOST({
     messaging_product: "whatsapp",
@@ -107,21 +113,21 @@ async function sendMainMenuList(to) {
     type: "interactive",
     interactive: {
       type: "list",
-      header: { type: "text", text: `Bienvenido a ${BUSINESS} 🍺` },
-      body: { text: "Elige una opción:" },
+      header: { type: "text", text: `🍻 Bienvenido a ${BUSINESS}` },
+      body: { text: "¿Qué te gustaría hacer?" },
       footer: { text: CITY },
       action: {
         button: "Ver opciones",
         sections: [
           {
-            title: "Opciones",
+            title: "Opciones disponibles",
             rows: [
-              { id: "horario_menu",        title: "🕐 Horario y Menú" },
+              { id: "reservas",            title: "🗓️ Reservar mesa" },
+              { id: "cerveza",             title: "🍺 Comprar cerveza" },
+              { id: "promos",              title: "🔥 Promos/Eventos" },
+              { id: "horario_menu",        title: "🕐 Horarios y ver menú" },
               { id: "ubicacion",           title: "📍 Ubicación" },
-              { id: "plan_wayra",          title: "🥤 Plan Wayra ($2)" },
-              { id: "reservas",            title: "🗓️ Reservas" },
-              { id: "reservas_especiales", title: "🎉 Reservas especiales" },
-              { id: "cerveza",             title: "🍺 Comprar cerveza" }
+              { id: "reservas_especiales", title: "🎉 Reservas especiales" }
             ]
           }
         ]
@@ -130,22 +136,26 @@ async function sendMainMenuList(to) {
   });
 }
 
-async function sendWelcome(to) {
+async function sendWelcome(to, s) {
+  if (!s.greeted) {
+    await sendText(to, "👋 ¡Hola! Soy el asistente de *Wayra Brew Garten* en Ibarra.\nTe ayudo con reservas, promos y pedidos de cerveza.");
+    s.greeted = true;
+  }
   await sendMainMenuList(to);
 }
 
-// Horario y Menú (envía imagen si hay)
+// Horario y Menú → imagen (si hay) + texto
 async function sendHoursAndMenu(to) {
   if (MENU_IMAGE_URL) {
-    await sendImage(to, MENU_IMAGE_URL, `${BUSINESS} – ${CITY}\nMenú y horarios`);
+    await sendImage(to, MENU_IMAGE_URL, `${BUSINESS} – ${CITY}\n📸 Menú y horarios`);
   }
   const lines = [
-    "🕐 Horario:",
-    "Lun–Jue 12:00–22:00",
-    "Vie–Sáb 12:00–00:00",
-    "Dom 12:00–20:00",
+    "🕐 Horarios:",
+    "Jue–Vie 18h00–23h30",
+    "Sáb 12h30–23h30",
+    "Dom 12h30–19h00",
     "",
-    "¿Necesitas la carta? Si no ves la imagen, responde: *menú*."
+    "Si no ves la imagen, responde: *menú* y te la reenvío."
   ];
   await sendText(to, lines.join("\n"));
   await sendMainMenuList(to);
@@ -154,7 +164,7 @@ async function sendHoursAndMenu(to) {
 // Cerveza
 async function sendBeerMenu(to) {
   const txt =
-    `Opciones de cerveza:\n` +
+    `🍺 Formatos:\n` +
     `• Sixpack: $${PRICES.sixpack}\n` +
     `• Barril 20L: $${PRICES.barril_20l}\n` +
     `• Barril 30L: $${PRICES.barril_30l}\n\n` +
@@ -196,8 +206,8 @@ function extractUserText(msg) {
 }
 
 // ====== RUTAS ======
-app.get("/", (req, res) => res.status(200).send("✅ Wayra webhook running."));
-app.get("/healthz", (req, res) => res.sendStatus(200));
+app.get("/", (_req, res) => res.status(200).send("✅ Wayra webhook running."));
+app.get("/healthz", (_req, res) => res.sendStatus(200));
 
 // Verificación GET (Meta)
 app.get("/webhook", (req, res) => {
@@ -220,39 +230,21 @@ app.post("/webhook", async (req, res) => {
     const s = getSession(from);
     console.log("▶️ Entrante:", msg.type, text, "| mode:", s.mode);
 
-    // IDLE → menú principal y comandos
+    // === Bienvenida / inicio ===
+    if (s.mode === "idle" && (!s.greeted || /hola|buenas|menu|menú|inicio|start/i.test((text || "").toLowerCase()))) {
+      await sendWelcome(from, s);
+      return res.sendStatus(200);
+    }
+
+    // === Menú principal ===
     if (s.mode === "idle") {
       const low = (text || "").toLowerCase();
-
-      if (text === "horario_menu" || /^(menú|menu|horario)$/i.test(low)) {
-        await sendHoursAndMenu(from);
-        return res.sendStatus(200);
-      }
-
-      if (text === "ubicacion" || /ubicación|ubicacion|donde/i.test(low)) {
-        await sendLocation(from);
-        return res.sendStatus(200);
-      }
-
-      if (text === "plan_wayra" || /plan wayra|plan/i.test(low)) {
-        await sendText(from, PLAN_WAYRA_TEXT);
-        await sendMainMenuList(from);
-        return res.sendStatus(200);
-      }
 
       if (text === "reservas" || /^reservar|reserva$/i.test(low)) {
         s.mode = "reserve";
         s.reserve = { date:"", time:"", people:"", name:"" };
         await sendText(from, "¡Perfecto! Vamos a reservar tu mesa.");
         await askReserve(from, "date");
-        return res.sendStatus(200);
-      }
-
-      if (text === "reservas_especiales" || /especial/i.test(low)) {
-        s.mode = "special";
-        s.special = { occasion:"", date:"", time:"", people:"", name:"", notes:"" };
-        await sendText(from, "¡Genial! Te ayudaré con tu ocasión especial.");
-        await askSpecial(from, "occasion");
         return res.sendStatus(200);
       }
 
@@ -264,13 +256,36 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      if (!low || /hola|buenas|menu|menú|ayuda|inicio|start/i.test(low)) {
-        await sendWelcome(from);
+      if (text === "promos") {
+        await sendText(from, "🔥 Promo del fin de semana: 3 pintas por *$10* 🍻");
+        await sendMainMenuList(from);
         return res.sendStatus(200);
       }
+
+      if (text === "horario_menu" || /horario|menú|menu/i.test(low)) {
+        await sendHoursAndMenu(from);
+        return res.sendStatus(200);
+      }
+
+      if (text === "ubicacion" || /ubicación|ubicacion|donde/i.test(low)) {
+        await sendLocation(from);
+        return res.sendStatus(200);
+      }
+
+      if (text === "reservas_especiales" || /especial/i.test(low)) {
+        s.mode = "special";
+        s.special = { occasion:"", date:"", time:"", people:"", name:"", notes:"" };
+        await sendText(from, "¡Genial! Te ayudo con tu ocasión especial.");
+        await askSpecial(from, "occasion");
+        return res.sendStatus(200);
+      }
+
+      // Lo que no matchee → re-muestra menú
+      await sendMainMenuList(from);
+      return res.sendStatus(200);
     }
 
-    // RESERVA normal
+    // === Flow: RESERVA normal ===
     if (s.mode === "reserve") {
       if (!s.reserve.date)   { s.reserve.date = text; await askReserve(from, "time");   return res.sendStatus(200); }
       if (!s.reserve.time)   { s.reserve.time = text; await askReserve(from, "people"); return res.sendStatus(200); }
@@ -297,7 +312,7 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // RESERVA especial
+    // === Flow: RESERVA especial ===
     if (s.mode === "special") {
       if (!s.special.occasion){ s.special.occasion = text; await askSpecial(from, "date");   return res.sendStatus(200); }
       if (!s.special.date)    { s.special.date = text;     await askSpecial(from, "time");   return res.sendStatus(200); }
@@ -332,13 +347,13 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // CERVEZA
+    // === Flow: CERVEZA ===
     if (s.mode === "beer") {
       if (!s.beer.kind) {
         const low = (text || "").toLowerCase();
         if (/six/.test(low)) s.beer.kind = "sixpack";
-        else if (/20/.test(low)) s.beer.kind = "barril_20l";
-        else if (/30/.test(low)) s.beer.kind = "barril_30l";
+        else if (/20/.test(low)) s.beer.kind = "barril 20L";
+        else if (/30/.test(low)) s.beer.kind = "barril 30L";
         else { await sendText(from, "Formato no válido. Escribe: sixpack / barril 20 / barril 30."); return res.sendStatus(200); }
         await sendText(from, "¿Cuántas unidades deseas?");
         return res.sendStatus(200);
@@ -346,9 +361,11 @@ app.post("/webhook", async (req, res) => {
       if (!s.beer.qty)      { s.beer.qty = text; await sendText(from, "¿Entrega o recogida en local?"); return res.sendStatus(200); }
       if (!s.beer.delivery) {
         s.beer.delivery = text;
-        const priceUnit = PRICES[s.beer.kind] || 0;
-        const total = (Number(s.beer.qty) * priceUnit).toFixed(2);
-        const conf = `✅ Pedido:\n🍺 ${s.beer.kind.replace("_"," ")} x ${s.beer.qty} = $${total}\n🚚 ${s.beer.delivery}\n\n¿Confirmamos? (sí/no)`;
+        const unit = (s.beer.kind.includes("20") ? PRICES.barril_20l :
+                      s.beer.kind.includes("30") ? PRICES.barril_30l :
+                      PRICES.sixpack);
+        const total = (Number(s.beer.qty) * unit).toFixed(2);
+        const conf = `✅ Pedido:\n🍺 ${s.beer.kind} x ${s.beer.qty} = $${total}\n🚚 ${s.beer.delivery}\n\n¿Confirmamos? (sí/no)`;
         await sendText(from, conf);
         return res.sendStatus(200);
       }
@@ -368,6 +385,7 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
+    // Fallback → menú
     await sendMainMenuList(from);
     return res.sendStatus(200);
 
@@ -379,4 +397,4 @@ app.post("/webhook", async (req, res) => {
 
 // ====== ARRANQUE ======
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log("✅ Servidor corriendo en puerto " + PORT));
+app.listen(PORT, () => console.log("✅ Bot Wayra corriendo en puerto " + PORT));
